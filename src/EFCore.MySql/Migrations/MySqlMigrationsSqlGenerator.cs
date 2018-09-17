@@ -908,6 +908,9 @@ namespace Microsoft.EntityFrameworkCore.Migrations
                     annotatable[MySqlAnnotationNames.LegacyValueGeneratedOnAddOrUpdate];
                 if (generatedOnAddOrUpdateAnnotation != null && (bool)generatedOnAddOrUpdateAnnotation)
                     valueGenerationStrategy = MySqlValueGenerationStrategy.ComputedColumn;
+                var msSqlIdentityColumn = annotatable[MySqlAnnotationNames.MsSqlValueGenerationStrategy];
+                if (msSqlIdentityColumn != null && msSqlIdentityColumn.ToString() == "IdentityColumn")
+                    valueGenerationStrategy = MySqlValueGenerationStrategy.IdentityColumn;
             }
 
             var autoIncrement = false;

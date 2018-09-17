@@ -28,5 +28,10 @@ namespace Pomelo.EntityFrameworkCore.MySql.Metadata.Internal
         public const string FullTextIndex = Prefix + "FullTextIndex";
 
         public const string SpatialIndex = Prefix + "SpatialIndex";
+
+        /// <summary>
+        /// EfCore default vaule generation strategy
+        /// </summary>
+        public const string MsSqlValueGenerationStrategy = "SqlServer:ValueGenerationStrategy";
     }
 }
