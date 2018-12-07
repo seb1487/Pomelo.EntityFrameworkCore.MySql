@@ -12,13 +12,13 @@
       <RepositoryType>git</RepositoryType>
       <RepositoryUrl>git://github.com/PomeloFoundation/Pomelo.EntityFrameworkCore.MySql</RepositoryUrl>
       <SignAssembly>true</SignAssembly>
-      <AssemblyOriginatorKeyFile>key.pfx</AssemblyOriginatorKeyFile>
+      <AssemblyOriginatorKeyFile>key.snk</AssemblyOriginatorKeyFile>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="$(MicrosoftEntityFrameworkCoreRelationalVersion)" />
     <PackageReference Include="MySqlConnector" Version="$(MySqlConnectorVersion)" />
-    <PackageReference Include="Pomelo.JsonObject" Version="$(PomeloJsonObjectVersion)" />
+    <PackageReference Include="Pomelo.JsonObject.Signed" Version="$(PomeloJsonObjectVersion)" />
   </ItemGroup>
 
   <ItemGroup>
