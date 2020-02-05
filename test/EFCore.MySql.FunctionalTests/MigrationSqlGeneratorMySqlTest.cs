@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Reflection;
 using Pomelo.EntityFrameworkCore.MySql.Metadata.Internal;
 using Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities;
 using Microsoft.EntityFrameworkCore;
@@ -8,8 +9,9 @@ using Microsoft.EntityFrameworkCore.Metadata.Internal;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.Extensions.DependencyInjection;
+using Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities.Attributes;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
-using Pomelo.EntityFrameworkCore.MySql.Storage.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Storage;
 using Xunit;
 
 // ReSharper disable InconsistentNaming
@@ -17,7 +19,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
 {
     public class MigrationSqlGeneratorMySqlTest : MigrationSqlGeneratorTestBase
     {
-        [Fact]
+        [ConditionalFact]
         public virtual void It_lifts_foreign_key_additions()
         {
             Generate(
@@ -37,8 +39,8 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 {
                     Table = "Pie",
                     PrincipalTable = "Flavor",
-                    Columns = new[] {"FlavorId"},
-                    PrincipalColumns = new[] {"Id"}
+                    Columns = new[] { "FlavorId" },
+                    PrincipalColumns = new[] { "Id" }
                 });
 
             Assert.Equal(
@@ -52,7 +54,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 ignoreLineEndingDifferences: true);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void DefaultValue_formats_literal_correctly()
         {
             Generate(
@@ -80,55 +82,41 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 ignoreLineEndingDifferences: true);
         }
 
-        [Fact]
-        public void EnsureSchemaOperation()
-        {
-            Generate(new EnsureSchemaOperation
-            {
-                Name = "mySchema"
-            });
-
-            Assert.Equal(
-                @"CREATE DATABASE IF NOT EXISTS `mySchema`;" + EOL,
-                Sql,
-                ignoreLineEndingDifferences: true);
-        }
-
-        [Fact]
+        [ConditionalFact]
         public virtual void CreateDatabaseOperation()
         {
-            Generate(new MySqlCreateDatabaseOperation {Name = "Northwind"});
+            Generate(new MySqlCreateDatabaseOperation { Name = "Northwind" });
 
             Assert.Equal(
                 @"CREATE DATABASE `Northwind`;" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void CreateTableOperation()
         {
             base.CreateTableOperation();
 
             Assert.Equal(
-                "CREATE TABLE `dbo`.`People` (" + EOL +
-                "    `Id` int NOT NULL," + EOL +
-                "    `EmployerId` int NULL," + EOL +
-                "    `SSN` char(11) NULL," + EOL +
-                "    PRIMARY KEY (`Id`)," + EOL +
-                "    UNIQUE (`SSN`)," + EOL +
-                "    FOREIGN KEY (`EmployerId`) REFERENCES `Companies` (`Id`)" + EOL +
-                ");" + EOL,
-                Sql);
+                @"CREATE TABLE `People` (
+    `Id` int NOT NULL,
+    `EmployerId` int NULL COMMENT 'Employer ID comment',
+    `SSN` char(11) NULL,
+    PRIMARY KEY (`Id`),
+    UNIQUE (`SSN`),
+    CHECK (SSN > 0),
+    FOREIGN KEY (`EmployerId`) REFERENCES `Companies` (`Id`)
+) COMMENT 'Table comment';
+", Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void CreateTableUlongAutoincrement()
         {
             Generate(
                 new CreateTableOperation
                 {
                     Name = "TestUlongAutoIncrement",
-                    Schema = "dbo",
                     Columns =
                     {
                         new AddColumnOperation
@@ -143,54 +131,74 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                     },
                     PrimaryKey = new AddPrimaryKeyOperation
                     {
-                        Columns = new[] {"Id"}
+                        Columns = new[] { "Id" }
                     }
                 });
 
             Assert.Equal(
-                "CREATE TABLE `dbo`.`TestUlongAutoIncrement` (" + EOL +
+                "CREATE TABLE `TestUlongAutoIncrement` (" + EOL +
                 "    `Id` bigint unsigned NOT NULL AUTO_INCREMENT," + EOL +
                 "    PRIMARY KEY (`Id`)" + EOL +
                 ");" + EOL,
                 Sql);
         }
 
-        [Theory]
-        [InlineData(true, false, CharSetBehavior.AppendToAllAnsiColumns, CharSet.Latin1, CharSet.Utf8mb4, "")]
-        [InlineData(true, false, CharSetBehavior.AppendToUnicodeIndexAndKeyColumns, CharSet.Latin1, CharSet.Utf8mb4, "")]
-        [InlineData(true, false, CharSetBehavior.AppendToAllUnicodeColumns, CharSet.Latin1, CharSet.Utf8mb4, "utf8mb4")]
-        [InlineData(true, false, CharSetBehavior.AppendToAllColumns, CharSet.Latin1, CharSet.Utf8mb4, "utf8mb4")]
-        [InlineData(true, false, CharSetBehavior.AppendToAllColumns, CharSet.Latin1, CharSet.Ucs2, "ucs2")]
-        [InlineData(true, true, CharSetBehavior.AppendToAnsiIndexAndKeyColumns, CharSet.Latin1, CharSet.Utf8mb4, "")]
-        [InlineData(true, true, CharSetBehavior.AppendToUnicodeIndexAndKeyColumns, CharSet.Latin1, CharSet.Utf8mb4, "utf8mb4")]
-        [InlineData(true, true, CharSetBehavior.AppendToAllUnicodeColumns, CharSet.Latin1, CharSet.Utf8mb4, "utf8mb4")]
-        [InlineData(true, true, CharSetBehavior.AppendToAllColumns, CharSet.Latin1, CharSet.Utf8mb4, "utf8mb4")]
-        [InlineData(true, true, CharSetBehavior.AppendToAllColumns, CharSet.Latin1, CharSet.Ucs2, "ucs2")]
-        [InlineData(false, false, CharSetBehavior.AppendToAllUnicodeColumns, CharSet.Latin1, CharSet.Utf8mb4, "")]
-        [InlineData(false, false, CharSetBehavior.AppendToAnsiIndexAndKeyColumns, CharSet.Latin1, CharSet.Utf8mb4, "")]
-        [InlineData(false, false, CharSetBehavior.AppendToAllAnsiColumns, CharSet.Latin1, CharSet.Utf8mb4, "latin1")]
-        [InlineData(false, false, CharSetBehavior.AppendToAllColumns, CharSet.Latin1, CharSet.Utf8mb4, "latin1")]
-        [InlineData(false, false, CharSetBehavior.AppendToAllColumns, CharSet.Ucs2, CharSet.Utf8mb4, "ucs2")]
-        [InlineData(false, true, CharSetBehavior.AppendToUnicodeIndexAndKeyColumns, CharSet.Latin1, CharSet.Utf8mb4, "")]
-        [InlineData(false, true, CharSetBehavior.AppendToAnsiIndexAndKeyColumns, CharSet.Latin1, CharSet.Utf8mb4, "latin1")]
-        [InlineData(false, true, CharSetBehavior.AppendToAllAnsiColumns, CharSet.Latin1, CharSet.Utf8mb4, "latin1")]
-        [InlineData(false, true, CharSetBehavior.AppendToAllColumns, CharSet.Latin1, CharSet.Utf8mb4, "latin1")]
-        [InlineData(false, true, CharSetBehavior.AppendToAllColumns, CharSet.Ucs2, CharSet.Utf8mb4, "ucs2")]
-        public virtual void AddColumnOperation_with_charset(bool isUnicode, bool isIndex, CharSetBehavior charSetBehavior,
-            CharSet ansiCharSet, CharSet unicodeCharSet, string expectedCharSet)
+        [ConditionalTheory]
+        [InlineData(true, false, CharSetBehavior.AppendToAllAnsiColumns, "Latin1", false)]
+        [InlineData(true, false, CharSetBehavior.AppendToUnicodeIndexAndKeyColumns, "Latin1", false)]
+        [InlineData(true, false, CharSetBehavior.AppendToAllUnicodeColumns, "Latin1", true)]
+        [InlineData(true, false, CharSetBehavior.AppendToAllColumns, "Latin1", true)]
+        [InlineData(true, true, CharSetBehavior.AppendToAnsiIndexAndKeyColumns, "Latin1", false)]
+        [InlineData(true, true, CharSetBehavior.AppendToUnicodeIndexAndKeyColumns, "Latin1", true)]
+        [InlineData(true, true, CharSetBehavior.AppendToAllUnicodeColumns, "Latin1", true)]
+        [InlineData(true, true, CharSetBehavior.AppendToAllColumns, "Latin1", true)]
+        [InlineData(false, false, CharSetBehavior.AppendToAllUnicodeColumns, "Latin1", false)]
+        [InlineData(false, false, CharSetBehavior.AppendToAnsiIndexAndKeyColumns, "Latin1", false)]
+        [InlineData(false, false, CharSetBehavior.AppendToAllAnsiColumns, "Latin1", true)]
+        [InlineData(false, false, CharSetBehavior.AppendToAllColumns, "Latin1", true)]
+        [InlineData(false, true, CharSetBehavior.AppendToUnicodeIndexAndKeyColumns, "Latin1", false)]
+        [InlineData(false, true, CharSetBehavior.AppendToAnsiIndexAndKeyColumns, "Latin1", true)]
+        [InlineData(false, true, CharSetBehavior.AppendToAllAnsiColumns, "Latin1", true)]
+        [InlineData(false, true, CharSetBehavior.AppendToAllColumns, "Latin1", true)]
+        [InlineData(null, false, CharSetBehavior.AppendToAllAnsiColumns, "Latin1", true)]
+        [InlineData(null, false, CharSetBehavior.AppendToUnicodeIndexAndKeyColumns, "Latin1", false)]
+        [InlineData(null, false, CharSetBehavior.AppendToAllUnicodeColumns, "Latin1", false)]
+        [InlineData(null, false, CharSetBehavior.AppendToAllColumns, "Latin1", true)]
+        [InlineData(null, true, CharSetBehavior.AppendToAnsiIndexAndKeyColumns, "Latin1", true)]
+        [InlineData(null, true, CharSetBehavior.AppendToUnicodeIndexAndKeyColumns, "Latin1", false)]
+        [InlineData(null, true, CharSetBehavior.AppendToAllUnicodeColumns, "Latin1", false)]
+        [InlineData(null, true, CharSetBehavior.AppendToAllColumns, "Latin1", true)]
+        [InlineData(null, false, CharSetBehavior.AppendToAllAnsiColumns, "Utf8Mb4", false)]
+        [InlineData(null, false, CharSetBehavior.AppendToUnicodeIndexAndKeyColumns, "Utf8Mb4", false)]
+        [InlineData(null, false, CharSetBehavior.AppendToAllUnicodeColumns, "Utf8Mb4", true)]
+        [InlineData(null, false, CharSetBehavior.AppendToAllColumns, "Utf8Mb4", true)]
+        [InlineData(null, true, CharSetBehavior.AppendToAnsiIndexAndKeyColumns, "Utf8Mb4", false)]
+        [InlineData(null, true, CharSetBehavior.AppendToUnicodeIndexAndKeyColumns, "Utf8Mb4", true)]
+        [InlineData(null, true, CharSetBehavior.AppendToAllUnicodeColumns, "Utf8Mb4", true)]
+        [InlineData(null, true, CharSetBehavior.AppendToAllColumns, "Utf8Mb4", true)]
+        public virtual void AddColumnOperation_with_charSet_implicit(bool? isUnicode, bool isIndex, CharSetBehavior charSetBehavior,
+            string charSetName, bool expectExplicitCharSet)
         {
+            var charSet = CharSet.GetCharSetFromName(charSetName);
+            var expectedCharSetName = expectExplicitCharSet ? $" CHARACTER SET {charSet}" : string.Empty;
+
             Generate(
                 modelBuilder => modelBuilder.Entity("Person", eb =>
                     {
-                        eb.Property<string>("Name").IsUnicode(isUnicode);
+                        var pb = eb.Property<string>("Name");
+
+                        if (isUnicode.HasValue)
+                        {
+                            pb.IsUnicode(isUnicode.Value);
+                        }
+
                         if (isIndex)
                         {
                             eb.HasIndex("Name");
                         }
                     }),
                 charSetBehavior,
-                ansiCharSet,
-                unicodeCharSet,
+                charSet,
                 new AddColumnOperation
                 {
                     Table = "Person",
@@ -200,53 +208,50 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                     IsNullable = true
                 });
 
-            var appendCharSet = "";
-            if (!string.IsNullOrEmpty(expectedCharSet))
-            {
-                appendCharSet = $" CHARACTER SET {expectedCharSet}";
-            }
-
             var columnType = "longtext";
             if (isIndex)
             {
-                var serverVersion = new ServerVersion(null);
-                var charSetInfo = isUnicode ? new CharSetInfo(unicodeCharSet) : new CharSetInfo(ansiCharSet);
-                var columnSize = Math.Min(serverVersion.IndexMaxBytes / (charSetInfo.BytesPerChar * 2), 255);
+                var serverVersion = new ServerVersion();
+                var columnSize = Math.Min(serverVersion.MaxKeyLength / (charSet.MaxBytesPerChar * 2), 255);
                 columnType = $"varchar({columnSize})";
             }
 
             Assert.Equal(
-                $"ALTER TABLE `Person` ADD `Name` {columnType}{appendCharSet} NULL;" + EOL,
+                $"ALTER TABLE `Person` ADD `Name` {columnType}{expectedCharSetName} NULL;" + EOL,
                 Sql);
         }
 
+        [ConditionalFact]
         public override void AddColumnOperation_with_ansi()
         {
             base.AddColumnOperation_with_ansi();
 
             Assert.Equal(
-                @"ALTER TABLE `Person` ADD `Name` longtext CHARACTER SET latin1 NULL;" + EOL,
+                $@"ALTER TABLE `Person` ADD `Name` longtext CHARACTER SET utf8mb4 NULL;" + EOL,
                 Sql);
         }
 
+        [ConditionalFact]
         public override void AddColumnOperation_with_defaultValue()
         {
             base.AddColumnOperation_with_defaultValue();
 
             Assert.Equal(
-                @"ALTER TABLE `dbo`.`People` ADD `Name` varchar(30) NOT NULL DEFAULT 'John Doe';" + EOL,
+                @"ALTER TABLE `People` ADD `Name` varchar(30) NOT NULL DEFAULT 'John Doe';" + EOL,
                 Sql);
         }
 
+        [ConditionalFact]
         public override void AddColumnOperation_without_column_type()
         {
             base.AddColumnOperation_without_column_type();
 
             Assert.Equal(
-                @"ALTER TABLE `People` ADD `Alias` longtext NOT NULL;" + EOL,
+                @"ALTER TABLE `People` ADD `Alias` longtext CHARACTER SET utf8mb4 NOT NULL;" + EOL,
                 Sql);
         }
 
+        [ConditionalFact]
         public override void AddColumnOperation_with_defaultValueSql()
         {
             base.AddColumnOperation_with_defaultValueSql();
@@ -256,7 +261,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void AddColumnOperation_with_datetime6()
         {
             Generate(new AddColumnOperation
@@ -276,52 +281,47 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
+        [ConditionalFact]
         public override void AddColumnOperation_with_maxLength()
         {
             base.AddColumnOperation_with_maxLength();
 
             Assert.Equal(
-                @"ALTER TABLE `Person` ADD `Name` varchar(30) NULL;" + EOL,
+                @"ALTER TABLE `Person` ADD `Name` varchar(30) CHARACTER SET utf8mb4 NULL;" + EOL,
                 Sql);
         }
 
+        [ConditionalFact]
         public override void AddColumnOperation_with_maxLength_overridden()
         {
             base.AddColumnOperation_with_maxLength_overridden();
 
             Assert.Equal(
-                @"ALTER TABLE `Person` ADD `Name` varchar(32) NULL;" + EOL,
+                @"ALTER TABLE `Person` ADD `Name` varchar(32) CHARACTER SET utf8mb4 NULL;" + EOL,
                 Sql);
         }
 
+        [ConditionalFact]
         public override void AddColumnOperation_with_maxLength_on_derived()
         {
             base.AddColumnOperation_with_maxLength_on_derived();
 
             Assert.Equal(
-                @"ALTER TABLE `Person` ADD `Name` varchar(30) NULL;" + EOL,
+                @"ALTER TABLE `Person` ADD `Name` varchar(30) CHARACTER SET utf8mb4 NULL;" + EOL,
                 Sql);
         }
 
+        [ConditionalFact]
         public override void AddColumnOperation_with_shared_column()
         {
             base.AddColumnOperation_with_shared_column();
 
             Assert.Equal(
-                @"ALTER TABLE `Base` ADD `Foo` longtext NULL;" + EOL,
+                @"ALTER TABLE `Base` ADD `Foo` longtext CHARACTER SET utf8mb4 NULL;" + EOL,
                 Sql);
         }
 
-        public override void AddColumnOperation_with_computed_column_SQL()
-        {
-            base.AddColumnOperation_with_computed_column_SQL();
-
-            Assert.Equal(
-                @"ALTER TABLE `People` ADD `Birthday` date AS (CURRENT_TIMESTAMP) NULL;" + EOL,
-                Sql);
-        }
-
-        [Fact]
+        [ConditionalFact]
         public virtual void AddColumnOperation_with_computed_column()
         {
             Generate(
@@ -341,7 +341,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void AddColumnOperation_serial()
         {
             Generate(new AddColumnOperation
@@ -359,7 +359,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void AddColumnOperation_with_int_defaultValue_isnt_serial()
         {
             Generate(
@@ -378,7 +378,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void AddColumnOperation_with_dbgenerated_uuid()
         {
             Generate(
@@ -396,7 +396,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void AddDefaultDatetimeOperation_with_valueOnUpdate()
         {
             Generate(
@@ -416,7 +416,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void AddDefaultBooleanOperation()
         {
             Generate(
@@ -424,7 +424,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 {
                     Table = "People",
                     Name = "IsLeader",
-                    ClrType = typeof(Boolean),
+                    ClrType = typeof(bool),
                     ColumnType = "bit",
                     IsNullable = true,
                     DefaultValue = true
@@ -436,7 +436,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
         }
 
 
-        [Theory]
+        [ConditionalTheory]
         [InlineData("tinyblob")]
         [InlineData("blob")]
         [InlineData("mediumblob")]
@@ -497,7 +497,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public void AlterColumnOperation_type_with_index()
         {
             Generate(
@@ -528,7 +528,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public void AlterColumnOperation_ComputedColumnSql_with_index()
         {
             Generate(
@@ -555,38 +555,38 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
+        [ConditionalFact]
         public override void AddForeignKeyOperation_with_name()
         {
             base.AddForeignKeyOperation_with_name();
 
             Assert.Equal(
-                "ALTER TABLE `dbo`.`People` ADD CONSTRAINT `FK_People_Companies` FOREIGN KEY (`EmployerId1`, `EmployerId2`) REFERENCES `hr`.`Companies` (`Id1`, `Id2`) ON DELETE CASCADE;" +
+                "ALTER TABLE `People` ADD CONSTRAINT `FK_People_Companies` FOREIGN KEY (`EmployerId1`, `EmployerId2`) REFERENCES `Companies` (`Id1`, `Id2`) ON DELETE CASCADE;" +
                 EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void AddForeignKeyOperation_with_long_name()
         {
             Generate(
                 new AddForeignKeyOperation
                 {
                     Table = "People",
-                    Schema = "dbo",
                     Name = "FK_ASuperLongForeignKeyNameThatIsDefinetelyNotGoingToFitInThe64CharactersLimit",
-                    Columns = new[] {"EmployerId1", "EmployerId2"},
+                    Columns = new[] { "EmployerId1", "EmployerId2" },
                     PrincipalTable = "Companies",
-                    PrincipalSchema = "hr",
-                    PrincipalColumns = new[] {"Id1", "Id2"},
+                    PrincipalColumns = new[] { "Id1", "Id2" },
                     OnDelete = ReferentialAction.Cascade
                 });
 
             Assert.Equal(
-                "ALTER TABLE `dbo`.`People` ADD CONSTRAINT `FK_ASuperLongForeignKeyNameThatIsDefinetelyNotGoingToFitInThe64C` FOREIGN KEY (`EmployerId1`, `EmployerId2`) REFERENCES `hr`.`Companies` (`Id1`, `Id2`) ON DELETE CASCADE;" +
+                "ALTER TABLE `People` ADD CONSTRAINT `FK_ASuperLongForeignKeyNameThatIsDefinetelyNotGoingToFitInThe64C` FOREIGN KEY (`EmployerId1`, `EmployerId2`) REFERENCES `Companies` (`Id1`, `Id2`) ON DELETE CASCADE;" +
                 EOL,
                 Sql);
         }
 
+        [ConditionalFact]
         public override void AddForeignKeyOperation_without_name()
         {
             base.AddForeignKeyOperation_without_name();
@@ -596,81 +596,41 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void AddPrimaryKeyOperation_with_name()
         {
             base.AddPrimaryKeyOperation_with_name();
 
             Assert.Equal(
-                "ALTER TABLE `dbo`.`People` ADD CONSTRAINT `PK_People` PRIMARY KEY (`Id1`, `Id2`);" + EOL,
+                "ALTER TABLE `People` ADD CONSTRAINT `PK_People` PRIMARY KEY (`Id1`, `Id2`);" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void AddPrimaryKeyOperation_without_name()
         {
             base.AddPrimaryKeyOperation_without_name();
 
             var test =
                 "ALTER TABLE `People` ADD PRIMARY KEY (`Id`);" + EOL +
-                @"DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;
-CREATE PROCEDURE POMELO_AFTER_ADD_PRIMARY_KEY(IN `SCHEMA_NAME_ARGUMENT` VARCHAR(255), IN `TABLE_NAME_ARGUMENT` VARCHAR(255), IN `COLUMN_NAME_ARGUMENT` VARCHAR(255))
-BEGIN
-	DECLARE HAS_AUTO_INCREMENT_ID INT(11);
-	DECLARE PRIMARY_KEY_COLUMN_NAME VARCHAR(255);
-	DECLARE PRIMARY_KEY_TYPE VARCHAR(255);
-	DECLARE SQL_EXP VARCHAR(1000);
-	SELECT COUNT(*)
-		INTO HAS_AUTO_INCREMENT_ID
-		FROM `information_schema`.`COLUMNS`
-		WHERE `TABLE_SCHEMA` = (SELECT IFNULL(SCHEMA_NAME_ARGUMENT, SCHEMA()))
-			AND `TABLE_NAME` = TABLE_NAME_ARGUMENT
-			AND `COLUMN_NAME` = COLUMN_NAME_ARGUMENT
-			AND `COLUMN_TYPE` LIKE '%int%'
-			AND `COLUMN_KEY` = 'PRI';
-	IF HAS_AUTO_INCREMENT_ID THEN
-		SELECT `COLUMN_TYPE`
-			INTO PRIMARY_KEY_TYPE
-			FROM `information_schema`.`COLUMNS`
-			WHERE `TABLE_SCHEMA` = (SELECT IFNULL(SCHEMA_NAME_ARGUMENT, SCHEMA()))
-				AND `TABLE_NAME` = TABLE_NAME_ARGUMENT
-				AND `COLUMN_NAME` = COLUMN_NAME_ARGUMENT
-				AND `COLUMN_TYPE` LIKE '%int%'
-				AND `COLUMN_KEY` = 'PRI';
-		SELECT `COLUMN_NAME`
-			INTO PRIMARY_KEY_COLUMN_NAME
-			FROM `information_schema`.`COLUMNS`
-			WHERE `TABLE_SCHEMA` = (SELECT IFNULL(SCHEMA_NAME_ARGUMENT, SCHEMA()))
-				AND `TABLE_NAME` = TABLE_NAME_ARGUMENT
-				AND `COLUMN_NAME` = COLUMN_NAME_ARGUMENT
-				AND `COLUMN_TYPE` LIKE '%int%'
-				AND `COLUMN_KEY` = 'PRI';
-		SET SQL_EXP = CONCAT('ALTER TABLE `', (SELECT IFNULL(SCHEMA_NAME_ARGUMENT, SCHEMA())), '`.`', TABLE_NAME_ARGUMENT, '` MODIFY COLUMN `', PRIMARY_KEY_COLUMN_NAME, '` ', PRIMARY_KEY_TYPE, ' NOT NULL AUTO_INCREMENT;');
-		SET @SQL_EXP = SQL_EXP;
-		PREPARE SQL_EXP_EXECUTE FROM @SQL_EXP;
-		EXECUTE SQL_EXP_EXECUTE;
-		DEALLOCATE PREPARE SQL_EXP_EXECUTE;
-	END IF;
-END;
-CALL POMELO_AFTER_ADD_PRIMARY_KEY(NULL, 'People', 'Id');
-DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;".Replace("\r", string.Empty).Replace("\n", EOL) + EOL;
+                @"CALL POMELO_AFTER_ADD_PRIMARY_KEY(NULL, 'People', 'Id');".Replace("\r", string.Empty).Replace("\n", EOL) + EOL;
 
             Assert.Equal(test,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void AddUniqueConstraintOperation_with_name()
         {
             base.AddUniqueConstraintOperation_with_name();
 
             Assert.Equal(
-                "ALTER TABLE `dbo`.`People` ADD CONSTRAINT `AK_People_DriverLicense` UNIQUE (`DriverLicense_State`, `DriverLicense_Number`);" +
+                "ALTER TABLE `People` ADD CONSTRAINT `AK_People_DriverLicense` UNIQUE (`DriverLicense_State`, `DriverLicense_Number`);" +
                 EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void AddUniqueConstraintOperation_without_name()
         {
             base.AddUniqueConstraintOperation_without_name();
@@ -680,30 +640,17 @@ DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;".Replace("\r", string.Emp
                 Sql);
         }
 
-        [Fact]
-        public void DropSchemaOperation()
-        {
-            Generate(new DropSchemaOperation
-            {
-                Name = "mySchema"
-            });
-
-            Assert.Equal(
-                @"DROP SCHEMA `mySchema`;" + EOL,
-                Sql);
-        }
-
-        [Fact]
+        [ConditionalFact]
         public override void CreateIndexOperation_unique()
         {
             base.CreateIndexOperation_unique();
 
             Assert.Equal(
-                "CREATE UNIQUE INDEX `IX_People_Name` ON `dbo`.`People` (`FirstName`, `LastName`);" + EOL,
+                "CREATE UNIQUE INDEX `IX_People_Name` ON `People` (`FirstName`, `LastName`);" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void CreateIndexOperation_fulltext()
         {
             Generate(
@@ -711,17 +658,16 @@ DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;".Replace("\r", string.Emp
                 {
                     Name = "IX_People_Name",
                     Table = "People",
-                    Schema = "dbo",
-                    Columns = new[] {"FirstName", "LastName"},
+                    Columns = new[] { "FirstName", "LastName" },
                     [MySqlAnnotationNames.FullTextIndex] = true
                 });
 
             Assert.Equal(
-                "CREATE FULLTEXT INDEX `IX_People_Name` ON `dbo`.`People` (`FirstName`, `LastName`);" + EOL,
+                "CREATE FULLTEXT INDEX `IX_People_Name` ON `People` (`FirstName`, `LastName`);" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void CreateIndexOperation_spatial()
         {
             Generate(
@@ -729,17 +675,16 @@ DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;".Replace("\r", string.Emp
                 {
                     Name = "IX_People_Name",
                     Table = "People",
-                    Schema = "dbo",
-                    Columns = new[] {"FirstName", "LastName"},
+                    Columns = new[] { "FirstName", "LastName" },
                     [MySqlAnnotationNames.SpatialIndex] = true
                 });
 
             Assert.Equal(
-                "CREATE SPATIAL INDEX `IX_People_Name` ON `dbo`.`People` (`FirstName`, `LastName`);" + EOL,
+                "CREATE SPATIAL INDEX `IX_People_Name` ON `People` (`FirstName`, `LastName`);" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void CreateIndexOperation_nonunique()
         {
             base.CreateIndexOperation_nonunique();
@@ -749,7 +694,7 @@ DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;".Replace("\r", string.Emp
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void CreateIndexOperation_with_long_name()
         {
             Generate(
@@ -757,7 +702,7 @@ DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;".Replace("\r", string.Emp
                 {
                     Name = "IX_ASuperLongForeignKeyNameThatIsDefinetelyNotGoingToFitInThe64CharactersLimit",
                     Table = "People",
-                    Columns = new[] {"Name"},
+                    Columns = new[] { "Name" },
                     IsUnique = false
                 });
 
@@ -766,7 +711,7 @@ DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;".Replace("\r", string.Emp
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void RenameIndexOperation()
         {
             var migrationBuilder = new MigrationBuilder("MySql");
@@ -783,7 +728,7 @@ DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;".Replace("\r", string.Emp
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void RenameIndexOperation_with_model()
         {
             Generate(
@@ -806,25 +751,24 @@ DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;".Replace("\r", string.Emp
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void RenameColumnOperation()
         {
             var migrationBuilder = new MigrationBuilder("MySql");
 
             migrationBuilder.RenameColumn(
-                    table: "Person",
-                    name: "Name",
-                    newName: "FullName")
-                .Annotation(RelationalAnnotationNames.ColumnType, "VARCHAR(4000)");
+                table: "Person",
+                name: "Name",
+                newName: "FullName");
 
             Generate(migrationBuilder.Operations.ToArray());
 
             Assert.Equal(
-                "ALTER TABLE `Person` CHANGE `Name` `FullName` VARCHAR(4000);" + EOL,
+                "ALTER TABLE `Person` RENAME COLUMN `Name` TO `FullName`;" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public virtual void RenameColumnOperation_with_model()
         {
             var migrationBuilder = new MigrationBuilder("MySql");
@@ -841,109 +785,72 @@ DROP PROCEDURE IF EXISTS POMELO_AFTER_ADD_PRIMARY_KEY;".Replace("\r", string.Emp
                 migrationBuilder.Operations.ToArray());
 
             Assert.Equal(
-                "ALTER TABLE `Person` CHANGE `Name` `FullName` longtext NULL;" + EOL,
+                "ALTER TABLE `Person` RENAME COLUMN `Name` TO `FullName`;" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void DropColumnOperation()
         {
             base.DropColumnOperation();
 
             Assert.Equal(
-                "ALTER TABLE `dbo`.`People` DROP COLUMN `LuckyNumber`;" + EOL,
+                "ALTER TABLE `People` DROP COLUMN `LuckyNumber`;" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void DropForeignKeyOperation()
         {
             base.DropForeignKeyOperation();
 
             Assert.Equal(
-                "ALTER TABLE `dbo`.`People` DROP FOREIGN KEY `FK_People_Companies`;" + EOL,
+                "ALTER TABLE `People` DROP FOREIGN KEY `FK_People_Companies`;" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void DropPrimaryKeyOperation()
         {
             base.DropPrimaryKeyOperation();
 
             Assert.Equal(
-                @"DROP PROCEDURE IF EXISTS POMELO_BEFORE_DROP_PRIMARY_KEY;
-CREATE PROCEDURE POMELO_BEFORE_DROP_PRIMARY_KEY(IN `SCHEMA_NAME_ARGUMENT` VARCHAR(255), IN `TABLE_NAME_ARGUMENT` VARCHAR(255))
-BEGIN
-	DECLARE HAS_AUTO_INCREMENT_ID TINYINT(1);
-	DECLARE PRIMARY_KEY_COLUMN_NAME VARCHAR(255);
-	DECLARE PRIMARY_KEY_TYPE VARCHAR(255);
-	DECLARE SQL_EXP VARCHAR(1000);
-	SELECT COUNT(*)
-		INTO HAS_AUTO_INCREMENT_ID
-		FROM `information_schema`.`COLUMNS`
-		WHERE `TABLE_SCHEMA` = (SELECT IFNULL(SCHEMA_NAME_ARGUMENT, SCHEMA()))
-			AND `TABLE_NAME` = TABLE_NAME_ARGUMENT
-			AND `Extra` = 'auto_increment'
-			AND `COLUMN_KEY` = 'PRI'
-			LIMIT 1;
-	IF HAS_AUTO_INCREMENT_ID THEN
-		SELECT `COLUMN_TYPE`
-			INTO PRIMARY_KEY_TYPE
-			FROM `information_schema`.`COLUMNS`
-			WHERE `TABLE_SCHEMA` = (SELECT IFNULL(SCHEMA_NAME_ARGUMENT, SCHEMA()))
-				AND `TABLE_NAME` = TABLE_NAME_ARGUMENT
-				AND `COLUMN_KEY` = 'PRI'
-			LIMIT 1;
-		SELECT `COLUMN_NAME`
-			INTO PRIMARY_KEY_COLUMN_NAME
-			FROM `information_schema`.`COLUMNS`
-			WHERE `TABLE_SCHEMA` = (SELECT IFNULL(SCHEMA_NAME_ARGUMENT, SCHEMA()))
-				AND `TABLE_NAME` = TABLE_NAME_ARGUMENT
-				AND `COLUMN_KEY` = 'PRI'
-			LIMIT 1;
-		SET SQL_EXP = CONCAT('ALTER TABLE `', (SELECT IFNULL(SCHEMA_NAME_ARGUMENT, SCHEMA())), '`.`', TABLE_NAME_ARGUMENT, '` MODIFY COLUMN `', PRIMARY_KEY_COLUMN_NAME, '` ', PRIMARY_KEY_TYPE, ' NOT NULL;');
-		SET @SQL_EXP = SQL_EXP;
-		PREPARE SQL_EXP_EXECUTE FROM @SQL_EXP;
-		EXECUTE SQL_EXP_EXECUTE;
-		DEALLOCATE PREPARE SQL_EXP_EXECUTE;
-	END IF;
-END;
-CALL POMELO_BEFORE_DROP_PRIMARY_KEY('dbo', 'People');
-DROP PROCEDURE IF EXISTS POMELO_BEFORE_DROP_PRIMARY_KEY;
-ALTER TABLE `dbo`.`People` DROP PRIMARY KEY;".Replace("\r", string.Empty).Replace("\n", EOL) + EOL,
+                @"CALL POMELO_BEFORE_DROP_PRIMARY_KEY(NULL, 'People');
+ALTER TABLE `People` DROP PRIMARY KEY;".Replace("\r", string.Empty).Replace("\n", EOL) + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void DropTableOperation()
         {
             base.DropTableOperation();
 
             Assert.Equal(
-                "DROP TABLE `dbo`.`People`;" + EOL,
+                "DROP TABLE `People`;" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void DropUniqueConstraintOperation()
         {
             base.DropUniqueConstraintOperation();
 
             Assert.Equal(
-                "ALTER TABLE `dbo`.`People` DROP KEY `AK_People_SSN`;" + EOL,
+                "ALTER TABLE `People` DROP KEY `AK_People_SSN`;" + EOL,
                 Sql);
         }
 
+        [ConditionalFact]
         public override void DropIndexOperation()
         {
             base.DropIndexOperation();
 
             Assert.Equal(
-                @"ALTER TABLE `dbo`.`People` DROP INDEX `IX_People_Name`;" + EOL,
+                @"ALTER TABLE `People` DROP INDEX `IX_People_Name`;" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void SqlOperation()
         {
             base.SqlOperation();
@@ -953,27 +860,53 @@ ALTER TABLE `dbo`.`People` DROP PRIMARY KEY;".Replace("\r", string.Empty).Replac
                 Sql);
         }
 
+        [ConditionalFact]
+        public virtual void AddColumnOperation_with_charSet_annotation()
+        {
+            Generate(
+                new AddColumnOperation
+                {
+                    Table = "People",
+                    Name = "Name",
+                    ClrType = typeof(string),
+                    ColumnType = "varchar(255)",
+                    IsNullable = true,
+                    [MySqlAnnotationNames.CharSet] = CharSet.SJis,
+                });
+
+            Assert.Equal(
+                "ALTER TABLE `People` ADD `Name` varchar(255) CHARACTER SET sjis NULL;" +
+                EOL,
+                Sql);
+        }
+
         // MySql doesn't support sequence
+        [ConditionalFact]
         public override void AlterSequenceOperation_with_minValue_and_maxValue()
         {
         }
 
+        [ConditionalFact]
         public override void AlterSequenceOperation_without_minValue_and_maxValue()
         {
         }
 
+        [ConditionalFact]
         public override void CreateSequenceOperation_with_minValue_and_maxValue()
         {
         }
 
+        [ConditionalFact]
         public override void CreateSequenceOperation_with_minValue_and_maxValue_not_long()
         {
         }
 
+        [ConditionalFact]
         public override void CreateSequenceOperation_without_minValue_and_maxValue()
         {
         }
 
+        [ConditionalFact]
         public override void DropSequenceOperation()
         {
         }
@@ -983,32 +916,57 @@ ALTER TABLE `dbo`.`People` DROP PRIMARY KEY;".Replace("\r", string.Empty).Replac
         {
         }
 
-        protected override void Generate(Action<ModelBuilder> buildAction, params MigrationOperation[] operation)
+        protected override void Generate(params MigrationOperation[] operations)
+            => base.Generate(ResetSchema(operations));
+
+        protected override void Generate(Action<ModelBuilder> buildAction, params MigrationOperation[] operations)
         {
-            var services = MySqlTestHelpers.Instance.CreateContextServices();
+            var services = MySqlTestHelpers.Instance.CreateContextServices(ServerVersion.Default);
             var modelBuilder = MySqlTestHelpers.Instance.CreateConventionBuilder(services);
             buildAction(modelBuilder);
 
             var batch = services.GetRequiredService<IMigrationsSqlGenerator>()
-                .Generate(operation, modelBuilder.Model);
+                .Generate(ResetSchema(operations), modelBuilder.Model);
 
             Sql = string.Join(
                 EOL,
                 batch.Select(b => b.CommandText));
         }
 
-        protected virtual void Generate(Action<ModelBuilder> buildAction, CharSetBehavior charSetBehavior, CharSet ansiCharSet, CharSet unicodeCharSet, params MigrationOperation[] operation)
+        protected virtual void Generate(Action<ModelBuilder> buildAction, CharSetBehavior charSetBehavior, CharSet charSet, params MigrationOperation[] operations)
         {
-            var services = MySqlTestHelpers.Instance.CreateContextServices(charSetBehavior, ansiCharSet, unicodeCharSet);
+            var services = MySqlTestHelpers.Instance.CreateContextServices(charSetBehavior, charSet);
             var modelBuilder = MySqlTestHelpers.Instance.CreateConventionBuilder(services);
             buildAction(modelBuilder);
 
             var batch = services.GetRequiredService<IMigrationsSqlGenerator>()
-                .Generate(operation, modelBuilder.Model);
+                .Generate(ResetSchema(operations), modelBuilder.Model);
 
             Sql = string.Join(
                 EOL,
                 batch.Select(b => b.CommandText));
+        }
+
+        /// <summary>
+        /// The base class does set schema values, while MySQL does not support
+        /// the EF Core concept of schemas.
+        /// </summary>
+        protected virtual MigrationOperation[] ResetSchema(params MigrationOperation[] operations)
+        {
+            foreach (var operation in operations)
+            {
+                var schemaPropertyInfos = operation
+                    .GetType()
+                    .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.GetProperty)
+                    .Where(p => p.Name.Contains(nameof(AddForeignKeyOperation.Schema), StringComparison.Ordinal));
+
+                foreach (var schemaPropertyInfo in schemaPropertyInfos)
+                {
+                    schemaPropertyInfo.SetValue(operation, null);
+                }
+            }
+
+            return operations;
         }
     }
 }

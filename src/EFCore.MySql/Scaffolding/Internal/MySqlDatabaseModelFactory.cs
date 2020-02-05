@@ -7,161 +7,387 @@ using System.Data;
 using System.Data.Common;
 using System.Linq;
 using System.Text.RegularExpressions;
+using JetBrains.Annotations;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Scaffolding;
 using Microsoft.EntityFrameworkCore.Scaffolding.Metadata;
+using Microsoft.EntityFrameworkCore.Utilities;
 using Microsoft.Extensions.Logging;
 using MySql.Data.MySqlClient;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Metadata.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Storage;
+using Pomelo.EntityFrameworkCore.MySql.Storage.Internal;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
 {
-    public class MySqlDatabaseModelFactory : IDatabaseModelFactory
+    public class MySqlDatabaseModelFactory : DatabaseModelFactory
     {
-        private MySqlConnection _connection;
-        private DatabaseModel _databaseModel;
-        private Dictionary<string, DatabaseTable> _tables;
+        private readonly IDiagnosticsLogger<DbLoggerCategory.Scaffolding> _logger;
+        private MySqlScaffoldingConnectionSettings _settings;
+        private readonly IMySqlOptions _options;
 
-        public MySqlDatabaseModelFactory(ILoggerFactory loggerFactory)
+        public MySqlDatabaseModelFactory(
+            [NotNull] IDiagnosticsLogger<DbLoggerCategory.Scaffolding> logger,
+            IMySqlOptions options)
         {
-            Logger = loggerFactory.CreateCommandsLogger();
+            Check.NotNull(logger, nameof(logger));
+
+            _logger = logger;
+            _options = options;
+            _settings = new MySqlScaffoldingConnectionSettings(string.Empty);
         }
 
-        protected virtual ILogger Logger { get; }
-
-        private void ResetState()
+        public override DatabaseModel Create(string connectionString, DatabaseModelFactoryOptions options)
         {
-            _connection = null;
-            _databaseModel = new DatabaseModel();
-            _tables = new Dictionary<string, DatabaseTable>();
+            Check.NotEmpty(connectionString, nameof(connectionString));
+            Check.NotNull(options, nameof(options));
+
+            _settings = new MySqlScaffoldingConnectionSettings(connectionString);
+
+            using var connection = new MySqlConnection(_settings.GetProviderCompatibleConnectionString());
+            return Create(connection, options);
         }
 
-        public DatabaseModel Create(string connectionString, IEnumerable<string> tables, IEnumerable<string> schemas)
+        public override DatabaseModel Create(DbConnection connection, DatabaseModelFactoryOptions options)
         {
-            using (var connection = new MySqlConnection(connectionString))
-            {
-                return Create(connection, tables, schemas);
-            }
-        }
+            Check.NotNull(connection, nameof(connection));
+            Check.NotNull(options, nameof(options));
 
-        public DatabaseModel Create(DbConnection connection, IEnumerable<string> tables, IEnumerable<string> schemas)
-        {
-            ResetState();
+            var databaseModel = new DatabaseModel();
 
-            _connection = (MySqlConnection)connection;
-
-            var connectionStartedOpen = _connection.State == ConnectionState.Open;
+            var connectionStartedOpen = connection.State == ConnectionState.Open;
             if (!connectionStartedOpen)
             {
-                _connection.Open();
+                connection.Open();
             }
 
             try
             {
-                _databaseModel.DatabaseName = _connection.Database;
-                _databaseModel.DefaultSchema = null;
+                SetupMySqlOptions(connection);
 
-                GetTables(tables.ToList());
-                GetColumns();
-                GetPrimaryKeys();
-                GetIndexes();
-                GetConstraints();
+                databaseModel.DatabaseName = connection.Database;
+                databaseModel.DefaultSchema = GetDefaultSchema(connection);
 
-                return _databaseModel;
+                var schemaList = Enumerable.Empty<string>().ToList();
+                var tableList = options.Tables.ToList();
+                var tableFilter = GenerateTableFilter(tableList, schemaList);
+
+                var tables = GetTables(connection, tableFilter);
+                foreach (var table in tables)
+                {
+                    table.Database = databaseModel;
+                    databaseModel.Tables.Add(table);
+                }
+
+                return databaseModel;
             }
             finally
             {
                 if (!connectionStartedOpen)
                 {
-                    _connection.Close();
+                    connection.Close();
                 }
             }
         }
 
-        private const string GetTablesQuery = @"SHOW FULL TABLES WHERE TABLE_TYPE = 'BASE TABLE'";
-
-        private void GetTables(List<string> allowedTables)
+        private void SetupMySqlOptions(DbConnection connection)
         {
-            using (var command = new MySqlCommand(GetTablesQuery, _connection))
-            using (var reader = command.ExecuteReader())
+            var optionsBuilder = new DbContextOptionsBuilder();
+            optionsBuilder.UseMySql(connection, builder =>
             {
-                while (reader.Read())
+                // Set the actual server version from the open connection here, so we can
+                // access it from IMySqlOptions later when generating the code for the
+                // `UseMySql()` call.
+                if (_options.ServerVersion.IsDefault)
                 {
-                    var table = new DatabaseTable
+                    try
                     {
-                        Schema = null,
-                        Name = reader.GetString(0).Replace("`", "")
-                    };
+                        var mySqlConnection = (MySqlConnection)connection;
+                        builder.ServerVersion(new ServerVersion(mySqlConnection.ServerVersion));
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // If we cannot determine the server version for some reason, just fall
+                        // back on the latest one (the default).
 
-                    if (allowedTables.Count == 0
-                        || allowedTables.Contains(table.Name))
-                    {
-                        _databaseModel.Tables.Add(table);
-                        _tables[table.Name] = table;
+                        // TODO: Output warning.
                     }
                 }
+            });
+
+            if (Equals(_options, new MySqlOptions()))
+            {
+                _options.Initialize(optionsBuilder.Options);
             }
         }
 
-        private const string GetColumnsQuery = @"SHOW COLUMNS FROM `{0}`";
-
-        private void GetColumns()
+        private string GetDefaultSchema(DbConnection connection)
         {
-            foreach (var x in _tables)
+            return null;
+        }
+
+        private static Func<string, string, bool> GenerateTableFilter(
+            IReadOnlyList<string> tables,
+            IReadOnlyList<string> schemas)
+        {
+            return tables.Count > 0 ? (s, t) => tables.Contains(t) : (Func<string, string, bool>)null;
+        }
+
+        private const string GetTablesQuery = @"SELECT
+    `TABLE_NAME`,
+    `TABLE_TYPE`,
+    IF(`TABLE_COMMENT` = 'VIEW' AND `TABLE_TYPE` = 'VIEW', '', `TABLE_COMMENT`) AS `TABLE_COMMENT`
+FROM
+    `INFORMATION_SCHEMA`.`TABLES`
+WHERE
+    `TABLE_SCHEMA` = SCHEMA()
+AND
+    `TABLE_TYPE` IN ('BASE TABLE', 'VIEW');";
+
+        private IEnumerable<DatabaseTable> GetTables(
+            DbConnection connection,
+            Func<string, string, bool> filter)
+        {
+            using (var command = connection.CreateCommand())
             {
-                using (var command = new MySqlCommand(string.Format(GetColumnsQuery, x.Key), _connection))
+                var tables = new List<DatabaseTable>();
+                command.CommandText = GetTablesQuery;
                 using (var reader = command.ExecuteReader())
                 {
                     while (reader.Read())
                     {
-                        var extra = reader.GetString(5);
-                        ValueGenerated valueGenerated;
-                        if (extra.IndexOf("auto_increment", StringComparison.Ordinal) >= 0)
+                        var name = reader.GetValueOrDefault<string>("TABLE_NAME");
+                        var type = reader.GetValueOrDefault<string>("TABLE_TYPE");
+                        var comment = reader.GetValueOrDefault<string>("TABLE_COMMENT");
+
+                        var table = string.Equals(type, "base table", StringComparison.OrdinalIgnoreCase)
+                            ? new DatabaseTable()
+                            : new DatabaseView();
+
+                        table.Schema = null;
+                        table.Name = name;
+                        table.Comment = string.IsNullOrEmpty(comment) ? null : comment;
+
+                        if (filter?.Invoke(table.Schema, table.Name) ?? true)
                         {
-                            valueGenerated = ValueGenerated.OnAdd;
+                            tables.Add(table);
                         }
-                        else if (extra.IndexOf("on update", StringComparison.Ordinal) >= 0)
+                    }
+                }
+
+                // This is done separately due to MARS property may be turned off
+                GetColumns(connection, tables, filter);
+                GetPrimaryKeys(connection, tables);
+                GetIndexes(connection, tables, filter);
+                GetConstraints(connection, tables);
+
+                return tables;
+            }
+        }
+
+        private const string GetColumnsQuery = @"SELECT
+	`COLUMN_NAME`,
+    `ORDINAL_POSITION`,
+    `COLUMN_DEFAULT`,
+    IF(`IS_NULLABLE` = 'YES', 1, 0) AS `IS_NULLABLE`,
+    `DATA_TYPE`,
+    `CHARACTER_SET_NAME`,
+    `COLLATION_NAME`,
+    `COLUMN_TYPE`,
+    `COLUMN_COMMENT`,
+    `EXTRA`
+FROM
+	`INFORMATION_SCHEMA`.`COLUMNS`
+WHERE
+	`TABLE_SCHEMA` = SCHEMA()
+AND
+	`TABLE_NAME` = '{0}'
+ORDER BY
+    `ORDINAL_POSITION`;";
+
+        private void GetColumns(
+            DbConnection connection,
+            IReadOnlyList<DatabaseTable> tables,
+            Func<string, string, bool> tableFilter)
+        {
+            foreach (var table in tables)
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = string.Format(GetColumnsQuery, table.Name);
+                    using (var reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
                         {
-                            if (reader[4] != DBNull.Value && extra.IndexOf(reader[4].ToString(), StringComparison.Ordinal) > 0)
+                            var name = reader.GetValueOrDefault<string>("COLUMN_NAME");
+                            var defaultValue = reader.GetValueOrDefault<string>("COLUMN_DEFAULT");
+                            var nullable = reader.GetValueOrDefault<bool>("IS_NULLABLE");
+                            var dataType = reader.GetValueOrDefault<string>("DATA_TYPE");
+                            var charset = reader.GetValueOrDefault<string>("CHARACTER_SET_NAME");
+                            var collation = reader.GetValueOrDefault<string>("COLLATION_NAME");
+                            var columType = reader.GetValueOrDefault<string>("COLUMN_TYPE");
+                            var extra = reader.GetValueOrDefault<string>("EXTRA");
+                            var comment = reader.GetValueOrDefault<string>("COLUMN_COMMENT");
+
+                            defaultValue = _options.ServerVersion.SupportsAlternativeDefaultExpression &&
+                                           defaultValue != null
+                                ? ConvertDefaultValueFromMariaDbToMySql(defaultValue)
+                                : defaultValue;
+
+                            ValueGenerated valueGenerated;
+
+                            if (extra.IndexOf("auto_increment", StringComparison.Ordinal) >= 0)
                             {
-                                valueGenerated = ValueGenerated.OnAddOrUpdate;
+                                valueGenerated = ValueGenerated.OnAdd;
+                            }
+                            else if (extra.IndexOf("on update", StringComparison.Ordinal) >= 0)
+                            {
+                                if (defaultValue != null && extra.IndexOf(defaultValue, StringComparison.Ordinal) > 0 ||
+                                    (string.Equals(dataType, "timestamp", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(dataType, "datetime", StringComparison.OrdinalIgnoreCase)) &&
+                                    extra.IndexOf("CURRENT_TIMESTAMP", StringComparison.Ordinal) > 0)
+                                {
+                                    valueGenerated = ValueGenerated.OnAddOrUpdate;
+                                }
+                                else
+                                {
+                                    // BUG: EF Core does not handle code generation for `OnUpdate`.
+                                    //      Instead, it just generates an empty method call ".()".
+                                    //      Tracked by: https://github.com/aspnet/EntityFrameworkCore/issues/18579
+                                    //
+                                    //      As a partial workaround, use `OnAddOrUpdate`, if a default value
+                                    //      has been specified.
+
+                                    if (defaultValue != null)
+                                    {
+                                        valueGenerated = ValueGenerated.OnAddOrUpdate;
+                                    }
+                                    else
+                                    {
+                                        valueGenerated = ValueGenerated.OnUpdate;
+                                    }
+                                }
                             }
                             else
                             {
-                                valueGenerated = ValueGenerated.OnUpdate;
+                                valueGenerated = ValueGenerated.Never;
                             }
-                        }
-                        else
-                        {
-                            valueGenerated = ValueGenerated.Never;
-                        }
 
+                            defaultValue = FilterClrDefaults(dataType, nullable, defaultValue);
 
-                        var column = new DatabaseColumn
-                        {
-                            Table = x.Value,
-                            Name = reader.GetString(0),
-                            StoreType = Regex.Replace(reader.GetString(1), @"(?<=int)\(\d+\)(?=\sunsigned)",
-                                string.Empty),
-                            IsNullable = reader.GetString(2) == "YES",
-                            DefaultValueSql = reader[4] == DBNull.Value
-                                ? null
-                                : '\'' + ParseToMySqlString(reader[4].ToString()) + '\'',
-                            ValueGenerated = valueGenerated
-                        };
-                        x.Value.Columns.Add(column);
+                            var column = new DatabaseColumn
+                            {
+                                Table = table,
+                                Name = name,
+                                StoreType = columType,
+                                IsNullable = nullable,
+                                DefaultValueSql = CreateDefaultValueString(defaultValue, dataType),
+                                ValueGenerated = valueGenerated,
+                                Comment = string.IsNullOrEmpty(comment) ? null : comment,
+                                [MySqlAnnotationNames.CharSet] = _settings.CharSet ? charset : null,
+                                [MySqlAnnotationNames.Collation] = _settings.Collation ? collation : null,
+                            };
+
+                            table.Columns.Add(column);
+                        }
                     }
                 }
             }
         }
 
-        private string ParseToMySqlString(string str)
+        /// <summary>
+        /// MariaDB 10.2.7+ implements default values differently from MySQL, to support their own default expression
+        /// syntax. We convert their column values to MySQL compatible syntax here.
+        /// See https://github.com/PomeloFoundation/Pomelo.EntityFrameworkCore.MySql/issues/994#issuecomment-568271740
+        /// for tables with differences.
+        /// </summary>
+        private string ConvertDefaultValueFromMariaDbToMySql([NotNull] string defaultValue)
         {
+            if (string.Equals(defaultValue, "NULL", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            if (defaultValue.StartsWith("'", StringComparison.Ordinal) &&
+                defaultValue.EndsWith("'", StringComparison.Ordinal) &&
+                defaultValue.Length >= 2)
+            {
+                // MariaDb escapes all single quotes with two single quotes in default value strings, even if they are
+                // escaped with backslashes in the original `CREATE TABLE` statement.
+                return defaultValue.Substring(1, defaultValue.Length - 2)
+                    .Replace("''", "'");
+            }
+
+            return defaultValue;
+        }
+
+        private static string FilterClrDefaults(string dataTypeName, bool nullable, string defaultValue)
+        {
+            if (defaultValue == null)
+            {
+                return null;
+            }
+
+            if (nullable)
+            {
+                return defaultValue;
+            }
+
+            if (defaultValue == "0")
+            {
+                if (dataTypeName == "bit"
+                    || dataTypeName == "tinyint"
+                    || dataTypeName == "smallint"
+                    || dataTypeName == "int"
+                    || dataTypeName == "bigint"
+                    || dataTypeName == "decimal"
+                    || dataTypeName == "double"
+                    || dataTypeName == "float")
+                {
+                    return null;
+                }
+            }
+            else if (Regex.IsMatch(defaultValue, @"^0\.0+$"))
+            {
+                if (dataTypeName == "decimal"
+                    || dataTypeName == "double"
+                    || dataTypeName == "float")
+                {
+                    return null;
+                }
+            }
+
+            return defaultValue;
+        }
+
+        private string CreateDefaultValueString(string defaultValue, string dataType)
+        {
+            if (defaultValue == null)
+            {
+                return null;
+            }
+
             // Pending the MySqlConnector implement MySqlCommandBuilder class
-            return str
-                .Replace("\\", "\\\\")
-                .Replace("'", "\\'")
-                .Replace("\"", "\\\"");
+            if ((string.Equals(dataType, "timestamp", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(dataType, "datetime", StringComparison.OrdinalIgnoreCase)) &&
+                string.Equals(defaultValue, "CURRENT_TIMESTAMP", StringComparison.OrdinalIgnoreCase))
+            {
+                return defaultValue;
+            }
+
+            // Handle bit values.
+            if (string.Equals(dataType, "bit", StringComparison.OrdinalIgnoreCase)
+                && defaultValue.StartsWith("b'"))
+            {
+                return defaultValue;
+            }
+
+            return "'" + defaultValue.Replace(@"\", @"\\").Replace("'", "''") + "'";
         }
 
         private const string GetPrimaryQuery = @"SELECT `INDEX_NAME`,
@@ -176,35 +402,34 @@ namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
         /// <remarks>
         /// Primary keys are handled as in <see cref="GetConstraints"/>, not here
         /// </remarks>
-        private void GetPrimaryKeys()
+        private void GetPrimaryKeys(
+            DbConnection connection,
+            IReadOnlyList<DatabaseTable> tables)
         {
-            foreach (var x in _tables)
+            foreach (var table in tables)
             {
-                using (var command =
-                    new MySqlCommand(string.Format(GetPrimaryQuery, _connection.Database, x.Key),
-                        _connection))
-                using (var reader = command.ExecuteReader())
+                using (var command = connection.CreateCommand())
                 {
-                    while (reader.Read())
+                    command.CommandText = string.Format(GetPrimaryQuery, connection.Database, table.Name);
+                    using (var reader = command.ExecuteReader())
                     {
-                        try
+                        while (reader.Read())
                         {
-                            var index = new DatabasePrimaryKey
+                            try
                             {
-                                Table = x.Value,
-                                Name = reader.GetString(0)
-                            };
+                                var index = new DatabasePrimaryKey {Table = table, Name = reader.GetString(0)};
 
-                            foreach (var column in reader.GetString(2).Split(','))
-                            {
-                                index.Columns.Add(x.Value.Columns.Single(y => y.Name == column));
+                                foreach (var column in reader.GetString(2).Split(','))
+                                {
+                                    index.Columns.Add(table.Columns.Single(y => y.Name == column));
+                                }
+
+                                table.PrimaryKey = index;
                             }
-
-                            x.Value.PrimaryKey = index;
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger.LogError(ex, "Error assigning primary key for {table}.", x.Key);
+                            catch (Exception ex)
+                            {
+                                _logger.Logger.LogError(ex, "Error assigning primary key for {table}.", table.Name);
+                            }
                         }
                     }
                 }
@@ -223,38 +448,32 @@ namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
         /// <remarks>
         /// Primary keys are handled as in <see cref="GetConstraints"/>, not here
         /// </remarks>
-        private void GetIndexes()
+        private void GetIndexes(DbConnection connection, IReadOnlyList<DatabaseTable> tables, Func<string, string, bool> tableFilter)
         {
-            foreach (var x in _tables)
+            foreach (var table in tables)
             {
-                using (var command =
-                    new MySqlCommand(string.Format(GetIndexesQuery, _connection.Database, x.Key),
-                        _connection))
-                using (var reader = command.ExecuteReader())
+                using (var command = connection.CreateCommand())
                 {
-                    while (reader.Read())
+                    command.CommandText = string.Format(GetIndexesQuery, connection.Database, table.Name);
+                    using (var reader = command.ExecuteReader())
                     {
-                        try
+                        while (reader.Read())
                         {
-                            var index = new DatabaseIndex
+                            try
                             {
-                                Table = x.Value,
-                                Name = reader.GetString(0),
-                                IsUnique = reader.GetFieldType(1) == typeof(string)
-                                    ? reader.GetString(1) == "1"
-                                    : !reader.GetBoolean(1)
-                            };
+                                var index = new DatabaseIndex {Table = table, Name = reader.GetString(0), IsUnique = !reader.GetBoolean(1)};
 
-                            foreach (var column in reader.GetString(2).Split(','))
-                            {
-                                index.Columns.Add(x.Value.Columns.Single(y => y.Name == column));
+                                foreach (var column in reader.GetString(2).Split(','))
+                                {
+                                    index.Columns.Add(table.Columns.Single(y => y.Name == column));
+                                }
+
+                                table.Indexes.Add(index);
                             }
-
-                            x.Value.Indexes.Add(index);
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger.LogError(ex, "Error assigning index for {table}.", x.Key);
+                            catch (Exception ex)
+                            {
+                                _logger.Logger.LogError(ex, "Error assigning index for {table}.", table.Name);
+                            }
                         }
                     }
                 }
@@ -277,40 +496,36 @@ namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
         `TABLE_NAME`,
         `REFERENCED_TABLE_NAME`;";
 
-        private void GetConstraints()
+        private void GetConstraints(DbConnection connection, IReadOnlyList<DatabaseTable> tables)
         {
-            foreach (var x in _tables)
+            foreach (var table in tables)
             {
-                using (var command =
-                    new MySqlCommand(string.Format(GetConstraintsQuery, _connection.Database, x.Key),
-                        _connection))
-                using (var reader = command.ExecuteReader())
+                using (var command = connection.CreateCommand())
                 {
-                    while (reader.Read())
+                    command.CommandText = string.Format(GetConstraintsQuery, connection.Database, table.Name);
+                    using (var reader = command.ExecuteReader())
                     {
-                        var referencedTableName = reader.GetString(2);
-                        if (_tables.TryGetValue(referencedTableName, out var referencedTable))
+                        while (reader.Read())
                         {
-                            var fkInfo = new DatabaseForeignKey
+                            var referencedTableName = reader.GetString(2);
+                            var referencedTable = tables.FirstOrDefault(t => t.Name == referencedTableName);
+                            if (referencedTable != null)
                             {
-                                Name = reader.GetString(0),
-                                OnDelete = ConvertToReferentialAction(reader.GetString(4)),
-                                Table = x.Value,
-                                PrincipalTable = referencedTable
-                            };
-                            foreach (var pair in reader.GetString(3).Split(','))
-                            {
-                                fkInfo.Columns.Add(x.Value.Columns.Single(y =>
-                                    string.Equals(y.Name, pair.Split('|')[0], StringComparison.OrdinalIgnoreCase)));
-                                fkInfo.PrincipalColumns.Add(fkInfo.PrincipalTable.Columns.Single(y =>
-                                    string.Equals(y.Name, pair.Split('|')[1], StringComparison.OrdinalIgnoreCase)));
-                            }
+                                var fkInfo = new DatabaseForeignKey {Name = reader.GetString(0), OnDelete = ConvertToReferentialAction(reader.GetString(4)), Table = table, PrincipalTable = referencedTable};
+                                foreach (var pair in reader.GetString(3).Split(','))
+                                {
+                                    fkInfo.Columns.Add(table.Columns.Single(y =>
+                                        string.Equals(y.Name, pair.Split('|')[0], StringComparison.OrdinalIgnoreCase)));
+                                    fkInfo.PrincipalColumns.Add(fkInfo.PrincipalTable.Columns.Single(y =>
+                                        string.Equals(y.Name, pair.Split('|')[1], StringComparison.OrdinalIgnoreCase)));
+                                }
 
-                            x.Value.ForeignKeys.Add(fkInfo);
-                        }
-                        else
-                        {
-                            Logger.LogWarning($"Referenced table `{referencedTableName}` is not in dictionary.");
+                                table.ForeignKeys.Add(fkInfo);
+                            }
+                            else
+                            {
+                                _logger.Logger.LogWarning($"Referenced table `{referencedTableName}` is not in dictionary.");
+                            }
                         }
                     }
                 }

@@ -33,5 +33,8 @@ namespace Pomelo.EntityFrameworkCore.MySql.Metadata.Internal
         /// EfCore default vaule generation strategy
         /// </summary>
         public const string MsSqlValueGenerationStrategy = "SqlServer:ValueGenerationStrategy";
+        public const string CharSet = Prefix + "CharSet";
+
+        public const string Collation = Prefix + "Collation";
     }
 }

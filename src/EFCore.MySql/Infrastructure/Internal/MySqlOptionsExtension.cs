@@ -2,21 +2,23 @@
 // Licensed under the MIT. See LICENSE in the project root for license information.
 
 using System.Text;
-using Pomelo.EntityFrameworkCore.MySql.Storage.Internal;
 using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Utilities;
 using Microsoft.Extensions.DependencyInjection;
+using System.Collections.Generic;
+using System.Globalization;
+using Pomelo.EntityFrameworkCore.MySql.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Storage;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal
 {
-    public sealed class MySqlOptionsExtension : RelationalOptionsExtension
+    public class MySqlOptionsExtension : RelationalOptionsExtension
     {
-        private long? _serviceProviderHash;
-        private string _logFragment;
+        private DbContextOptionsExtensionInfo _info;
 
         public MySqlOptionsExtension()
         {
+            ReplaceLineBreaksWithCharFunction = true;
         }
 
         public MySqlOptionsExtension([NotNull] MySqlOptionsExtension copyFrom)
@@ -24,10 +26,21 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal
         {
             ServerVersion = copyFrom.ServerVersion;
             NullableCharSetBehavior = copyFrom.NullableCharSetBehavior;
-            AnsiCharSetInfo = copyFrom.AnsiCharSetInfo;
-            UnicodeCharSetInfo = copyFrom.UnicodeCharSetInfo;
+            CharSet = copyFrom.CharSet;
             NoBackslashEscapes = copyFrom.NoBackslashEscapes;
+            UpdateSqlModeOnOpen = copyFrom.UpdateSqlModeOnOpen;
+            ReplaceLineBreaksWithCharFunction = copyFrom.ReplaceLineBreaksWithCharFunction;
+            DefaultDataTypeMappings = copyFrom.DefaultDataTypeMappings;
         }
+
+        /// <summary>
+        ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
+        ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
+        ///     any release. You should only use it directly in your code with extreme caution and knowing that
+        ///     doing so can result in application failures when updating to a new Entity Framework Core release.
+        /// </summary>
+        public override DbContextOptionsExtensionInfo Info
+            => _info ??= new ExtensionInfo(this);
 
         protected override RelationalOptionsExtension Clone()
             => new MySqlOptionsExtension(this);
@@ -48,20 +61,23 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
         ///     directly from your code. This API may change or be removed in future releases.
         /// </summary>
-        public CharSetInfo AnsiCharSetInfo { get; private set; }
-
-
-        /// <summary>
-        ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
-        ///     directly from your code. This API may change or be removed in future releases.
-        /// </summary>
-        public CharSetInfo UnicodeCharSetInfo { get; private set; }
+        public CharSet CharSet { get; private set; }
 
         /// <summary>
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
         ///     directly from your code. This API may change or be removed in future releases.
         /// </summary>
         public bool NoBackslashEscapes { get; private set; }
+
+        /// <summary>
+        ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
+        ///     directly from your code. This API may change or be removed in future releases.
+        /// </summary>
+        public bool UpdateSqlModeOnOpen { get; private set; }
+
+        public bool ReplaceLineBreaksWithCharFunction { get; private set; }
+
+        public MySqlDefaultDataTypeMappings DefaultDataTypeMappings { get; private set; }
 
         /// <summary>
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
@@ -93,11 +109,11 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
         ///     directly from your code. This API may change or be removed in future releases.
         /// </summary>
-        public MySqlOptionsExtension WithAnsiCharSetInfo(CharSetInfo charSetInfo)
+        public MySqlOptionsExtension WithCharSet(CharSet charSet)
         {
             var clone = (MySqlOptionsExtension)Clone();
 
-            clone.AnsiCharSetInfo = charSetInfo;
+            clone.CharSet = charSet;
 
             return clone;
         }
@@ -106,20 +122,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
         ///     directly from your code. This API may change or be removed in future releases.
         /// </summary>
-        public MySqlOptionsExtension WithUnicodeCharSetInfo(CharSetInfo charSetInfo)
-        {
-            var clone = (MySqlOptionsExtension)Clone();
-
-            clone.UnicodeCharSetInfo = charSetInfo;
-
-            return clone;
-        }
-
-        /// <summary>
-        ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
-        ///     directly from your code. This API may change or be removed in future releases.
-        /// </summary>
-        public MySqlOptionsExtension DisableBackslashEscaping()
+        public MySqlOptionsExtension WithDisabledBackslashEscaping()
         {
             var clone = (MySqlOptionsExtension)Clone();
             clone.NoBackslashEscapes = true;
@@ -130,54 +133,109 @@ namespace Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
         ///     directly from your code. This API may change or be removed in future releases.
         /// </summary>
-        public override long GetServiceProviderHashCode()
+        public MySqlOptionsExtension WithSettingSqlModeOnOpen()
         {
-            if (_serviceProviderHash == null)
+            var clone = (MySqlOptionsExtension)Clone();
+            clone.UpdateSqlModeOnOpen = true;
+            return clone;
+        }
+
+        public MySqlOptionsExtension WithDisabledLineBreakToCharSubstition()
+        {
+            var clone = (MySqlOptionsExtension)Clone();
+            clone.ReplaceLineBreaksWithCharFunction = false;
+            return clone;
+        }
+
+        public MySqlOptionsExtension WithDefaultDataTypeMappings(MySqlDefaultDataTypeMappings defaultDataTypeMappings)
+        {
+            var clone = (MySqlOptionsExtension)Clone();
+            clone.DefaultDataTypeMappings = defaultDataTypeMappings;
+            return clone;
+        }
+        
+        /// <summary>
+        ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
+        ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
+        ///     any release. You should only use it directly in your code with extreme caution and knowing that
+        ///     doing so can result in application failures when updating to a new Entity Framework Core release.
+        /// </summary>
+        public override void ApplyServices(IServiceCollection services)
+            => services.AddEntityFrameworkMySql();
+
+        private sealed class ExtensionInfo : RelationalExtensionInfo
+        {
+            private long? _serviceProviderHash;
+            private string _logFragment;
+
+            public ExtensionInfo(IDbContextOptionsExtension extension)
+                : base(extension)
             {
-                _serviceProviderHash = (base.GetServiceProviderHashCode() * 397) ^ (ServerVersion?.GetHashCode() ?? 0L);
-                _serviceProviderHash = (_serviceProviderHash * 397) ^ (NullableCharSetBehavior?.GetHashCode() ?? 0L);
-                _serviceProviderHash = (_serviceProviderHash * 397) ^ (AnsiCharSetInfo?.GetHashCode() ?? 0L);
-                _serviceProviderHash = (_serviceProviderHash * 397) ^ (UnicodeCharSetInfo?.GetHashCode() ?? 0L);
-                _serviceProviderHash = (_serviceProviderHash * 397) ^ NoBackslashEscapes.GetHashCode();
             }
 
-            return _serviceProviderHash.Value;
-        }
+            private new MySqlOptionsExtension Extension
+                => (MySqlOptionsExtension)base.Extension;
 
-        public override bool ApplyServices(IServiceCollection services)
-        {
-            Check.NotNull(services, nameof(services));
-            services.AddEntityFrameworkMySql();
-            return true;
-        }
+            public override bool IsDatabaseProvider => true;
 
-        /// <summary>
-        ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
-        ///     directly from your code. This API may change or be removed in future releases.
-        /// </summary>
-        public override string LogFragment
-        {
-            get
+            public override string LogFragment
             {
-                if (_logFragment == null)
+                get
                 {
-                    var builder = new StringBuilder();
-
-                    builder.Append(base.LogFragment);
-
-                    if (ServerVersion != null)
+                    if (_logFragment == null)
                     {
-                        builder.Append("ServerVersion ")
-                            .Append(ServerVersion.Version)
-                            .Append(" ")
-                            .Append(ServerVersion.Type)
-                            .Append(" ");
+                        var builder = new StringBuilder();
+
+                        builder.Append(base.LogFragment);
+
+                        if (Extension.ServerVersion != null)
+                        {
+                            builder.Append("ServerVersion ")
+                                .Append(Extension.ServerVersion.Version)
+                                .Append(" ")
+                                .Append(Extension.ServerVersion.Type)
+                                .Append(" ");
+                        }
+
+                        _logFragment = builder.ToString();
                     }
 
-                    _logFragment = builder.ToString();
+                    return _logFragment;
+                }
+            }
+
+            public override long GetServiceProviderHashCode()
+            {
+                if (_serviceProviderHash == null)
+                {
+                    _serviceProviderHash = (base.GetServiceProviderHashCode() * 397) ^ (Extension.ServerVersion?.GetHashCode() ?? 0L);
+                    _serviceProviderHash = (_serviceProviderHash * 397) ^ (Extension.NullableCharSetBehavior?.GetHashCode() ?? 0L);
+                    _serviceProviderHash = (_serviceProviderHash * 397) ^ (Extension.CharSet?.GetHashCode() ?? 0L);
+                    _serviceProviderHash = (_serviceProviderHash * 397) ^ Extension.NoBackslashEscapes.GetHashCode();
+                    _serviceProviderHash = (_serviceProviderHash * 397) ^ Extension.UpdateSqlModeOnOpen.GetHashCode();
+                    _serviceProviderHash = (_serviceProviderHash * 397) ^ Extension.ReplaceLineBreaksWithCharFunction.GetHashCode();
+                    _serviceProviderHash = (_serviceProviderHash * 397) ^ (Extension.DefaultDataTypeMappings?.GetHashCode() ?? 0L);
                 }
 
-                return _logFragment;
+                return _serviceProviderHash.Value;
+            }
+
+            public override void PopulateDebugInfo(IDictionary<string, string> debugInfo)
+            {
+                debugInfo["MySql:" + nameof(MySqlDbContextOptionsBuilder.ServerVersion)]
+                    = (Extension.ServerVersion?.GetHashCode() ?? 0L).ToString(CultureInfo.InvariantCulture);
+                debugInfo["MySql:" + nameof(MySqlDbContextOptionsBuilder.CharSetBehavior)]
+                    = (Extension.NullableCharSetBehavior?.GetHashCode() ?? 0L).ToString(CultureInfo.InvariantCulture);
+                debugInfo["MySql:" + nameof(MySqlDbContextOptionsBuilder.CharSet)]
+                    = (Extension.CharSet?.GetHashCode() ?? 0L).ToString(CultureInfo.InvariantCulture);
+                debugInfo["MySql:" + nameof(MySqlDbContextOptionsBuilder.DisableBackslashEscaping)]
+                    = Extension.NoBackslashEscapes.GetHashCode().ToString(CultureInfo.InvariantCulture);
+                debugInfo["MySql:" + nameof(MySqlDbContextOptionsBuilder.SetSqlModeOnOpen)]
+                    = Extension.UpdateSqlModeOnOpen.GetHashCode().ToString(CultureInfo.InvariantCulture);
+                debugInfo["MySql:" + nameof(MySqlDbContextOptionsBuilder.DisableLineBreakToCharSubstition)]
+                    = Extension.ReplaceLineBreaksWithCharFunction.GetHashCode().ToString(CultureInfo.InvariantCulture);
+                debugInfo["MySql:" + nameof(MySqlDbContextOptionsBuilder.DefaultDataTypeMappings)]
+                    = (Extension.DefaultDataTypeMappings?.GetHashCode() ?? 0L).ToString(CultureInfo.InvariantCulture);
             }
         }
     }

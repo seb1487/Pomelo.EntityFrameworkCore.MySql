@@ -9,6 +9,12 @@ using Microsoft.EntityFrameworkCore.Scaffolding.Metadata;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 using Microsoft.Extensions.Logging;
 using Xunit;
+using Microsoft.EntityFrameworkCore.Internal;
+using System.Diagnostics;
+using Pomelo.EntityFrameworkCore.MySql.Diagnostics.Internal;
+using Microsoft.EntityFrameworkCore.Scaffolding;
+using Microsoft.Extensions.DependencyInjection;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
 
 // ReSharper disable InconsistentNaming
 namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.Scaffolding
@@ -17,7 +23,11 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.Scaffolding
     {
         protected MySqlDatabaseModelFixture Fixture { get; }
 
-        public MySqlDatabaseModelFactoryTest(MySqlDatabaseModelFixture fixture) => Fixture = fixture;
+        public MySqlDatabaseModelFactoryTest(MySqlDatabaseModelFixture fixture)
+        {
+            Fixture = fixture;
+            Fixture.ListLoggerFactory.Clear();
+        }
 
         protected readonly List<(LogLevel Level, EventId Id, string Message)> Log = new List<(LogLevel Level, EventId Id, string Message)>();
 
@@ -27,9 +37,15 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests.Scaffolding
 
             try
             {
-                var databaseModelFactory = new MySqlDatabaseModelFactory(new LoggerFactory());
+                var logger = new DiagnosticsLogger<DbLoggerCategory.Scaffolding>(
+                        Fixture.ListLoggerFactory,
+                        new LoggingOptions(),
+                        new DiagnosticListener("Fake"),
+                        new MySqlLoggingDefinitions());
+                var databaseModelFactory = new MySqlDatabaseModelFactory(logger, Fixture.ServiceProvider.GetService<IMySqlOptions>());
 
-                var databaseModel = databaseModelFactory.Create(Fixture.TestStore.ConnectionString, tables, schemas);
+                var databaseModel = databaseModelFactory.Create(Fixture.TestStore.ConnectionString,
+                    new DatabaseModelFactoryOptions(tables, schemas));
                 Assert.NotNull(databaseModel);
                 asserter(databaseModel);
             }
@@ -806,6 +822,9 @@ DROP TABLE PrincipalTable;");
             protected override string StoreName { get; } = nameof(MySqlDatabaseModelFactoryTest);
             protected override ITestStoreFactory TestStoreFactory => MySqlTestStoreFactory.Instance;
             public new MySqlTestStore TestStore => (MySqlTestStore)base.TestStore;
+
+            protected override bool ShouldLogCategory(string logCategory)
+                => logCategory == DbLoggerCategory.Scaffolding.Name;
         }
     }
 }

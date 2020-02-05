@@ -3,21 +3,24 @@ using System.Linq;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using Pomelo.EntityFrameworkCore.MySql.FunctionalTests.TestUtilities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.Extensions.DependencyInjection;
+using Pomelo.EntityFrameworkCore.MySql.Storage;
 using Xunit;
 
 namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
 {
     public class MigrationSqlGeneratorMySql55Test : MigrationSqlGeneratorMySqlTest
     {
+        [ConditionalFact]
         public override void RenameIndexOperation()
         {
             Assert.Throws<InvalidOperationException>(() => base.RenameIndexOperation());
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void RenameIndexOperation_with_model()
         {
             Generate(
@@ -26,7 +29,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                     x =>
                     {
                         x.Property<string>("FullName");
-                        x.HasIndex("FullName").ForMySqlIsFullText();
+                        x.HasIndex("FullName");
                     }),
                 new RenameIndexOperation
                 {
@@ -38,11 +41,11 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
             Assert.Equal(
                 @"ALTER TABLE `Person` DROP INDEX `IX_Person_Name`;" + EOL +
                 EOL +
-                @"CREATE FULLTEXT INDEX `IX_Person_FullName` ON `Person` (`FullName`);" + EOL,
+                @"CREATE INDEX `IX_Person_FullName` ON `Person` (`FullName`);" + EOL,
                 Sql);
         }
 
-        [Fact]
+        [ConditionalFact]
         public override void AddColumnOperation_with_datetime6()
         {
             Generate(new AddColumnOperation
@@ -60,6 +63,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 Sql);
         }
 
+        [ConditionalFact]
         public override void DefaultValue_formats_literal_correctly()
         {
             Generate(
@@ -87,14 +91,53 @@ namespace Pomelo.EntityFrameworkCore.MySql.FunctionalTests
                 ignoreLineEndingDifferences: true);
         }
 
-        protected override void Generate(Action<ModelBuilder> buildAction, params MigrationOperation[] operation)
+        [ConditionalFact]
+        public override void RenameColumnOperation()
         {
-            var services = MySqlTestHelpers.Instance.CreateContextServices(new Version(5, 5, 2), ServerType.MySql);
+            var migrationBuilder = new MigrationBuilder("MySql");
+
+            migrationBuilder.RenameColumn(
+                    table: "Person",
+                    name: "Name",
+                    newName: "FullName")
+                .Annotation(RelationalAnnotationNames.ColumnType, "VARCHAR(4000)");
+
+            Generate(migrationBuilder.Operations.ToArray());
+
+            Assert.Equal(
+                "ALTER TABLE `Person` CHANGE `Name` `FullName` VARCHAR(4000);" + EOL,
+                Sql);
+        }
+
+        [ConditionalFact]
+        public override void RenameColumnOperation_with_model()
+        {
+            var migrationBuilder = new MigrationBuilder("MySql");
+
+            migrationBuilder.RenameColumn(
+                table: "Person",
+                name: "Name",
+                newName: "FullName");
+
+            Generate(
+                modelBuilder => modelBuilder.Entity(
+                    "Person",
+                    x => { x.Property<string>("FullName"); }),
+                migrationBuilder.Operations.ToArray());
+
+            Assert.Equal(
+                "ALTER TABLE `Person` CHANGE `Name` `FullName` longtext CHARACTER SET utf8mb4 NULL;" + EOL,
+                Sql);
+        }
+
+        protected override void Generate(Action<ModelBuilder> buildAction, params MigrationOperation[] operations)
+        {
+            var services = MySqlTestHelpers.Instance.CreateContextServices(new ServerVersion("5.5.2-mysql"));
             var modelBuilder = MySqlTestHelpers.Instance.CreateConventionBuilder(services);
             buildAction(modelBuilder);
 
             var batch = services.GetRequiredService<IMigrationsSqlGenerator>()
-                .Generate(operation, modelBuilder.Model);
+                .Generate(ResetSchema(operations), modelBuilder.Model);
 
             Sql = string.Join(
                 EOL,

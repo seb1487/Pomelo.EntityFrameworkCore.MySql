@@ -6,7 +6,7 @@ using System.Data;
 using System.Data.Common;
 using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore.Storage;
-using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
 {
@@ -20,7 +20,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
         private const int AnsiMax = 8000;
 
         private readonly int _maxSpecificSize;
-        private readonly bool _noBackslashEscapes;
+        private readonly IMySqlOptions _options;
 
         /// <summary>
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
@@ -29,10 +29,10 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
         public MySqlStringTypeMapping(
             [NotNull] string storeType,
             DbType? dbType,
+            IMySqlOptions options,
             bool unicode = false,
             int? size = null,
-            bool fixedLength = false,
-            bool noBackslashEscapes = false)
+            bool fixedLength = false)
             : this(
                 new RelationalTypeMappingParameters(
                     new CoreTypeMappingParameters(typeof(string)),
@@ -41,19 +41,20 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
                     dbType,
                     unicode,
                     size,
-                    fixedLength))
+                    fixedLength),
+                options)
         {
-            _noBackslashEscapes = noBackslashEscapes;
         }
 
         /// <summary>
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
         ///     directly from your code. This API may change or be removed in future releases.
         /// </summary>
-        protected MySqlStringTypeMapping(RelationalTypeMappingParameters parameters)
+        protected MySqlStringTypeMapping(RelationalTypeMappingParameters parameters, IMySqlOptions options)
             : base(parameters)
         {
             _maxSpecificSize = CalculateSize(parameters.Unicode, parameters.Size);
+            _options = options;
         }
 
         private static int CalculateSize(bool unicode, int? size)
@@ -67,7 +68,7 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
         /// <param name="parameters"> The parameters for this mapping. </param>
         /// <returns> The newly created mapping. </returns>
         protected override RelationalTypeMapping Clone(RelationalTypeMappingParameters parameters)
-            => new MySqlStringTypeMapping(parameters);
+            => new MySqlStringTypeMapping(parameters, _options);
 
         /// <summary>
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
@@ -81,33 +82,60 @@ namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
             // -1 (unbounded) to avoid size inference.
 
             var value = parameter.Value;
-            var length = (value as string)?.Length ?? (value as byte[])?.Length;
+            int? length;
 
+            if (value is string stringValue)
+            {
+                length = stringValue.Length;
+            }
+            else if (value is byte[] byteArray)
+            {
+                length = byteArray.Length;
+            }
+            else
+            {
+                length = null;
+            }
+            
+            parameter.Value = value;
             parameter.Size = value == null || value == DBNull.Value || length != null && length <= _maxSpecificSize
                 ? _maxSpecificSize
                 : -1;
         }
 
-        // eventually Unicode strings can be escaped with U'string'
-        // see https://dev.mysql.com/worklog/task/?id=3529
-        // until this change is made in MySQL, there is no way to escape unicode strings
-        /// <summary>
-        ///     Generates the SQL representation of a literal value.
-        /// </summary>
-        /// <param name="value">The literal value.</param>
-        /// <returns>
-        ///     The generated string.
-        /// </returns>
         protected override string GenerateNonNullSqlLiteral(object value)
-            => IsUnicode
-                ? $"'{EscapeSqlLiteral((string)value)}'" // Interpolation okay; strings
-                : $"'{EscapeSqlLiteral((string)value)}'";
+            => EscapeSqlLiteralWithLineBreaks((string)value);
+
+        private string EscapeSqlLiteralWithLineBreaks(string value)
+        {
+            var escapedLiteral = $"'{EscapeSqlLiteral(value)}'";
+
+            // BUG: EF Core indents idempotent scripts, which can lead to unexpected values for strings
+            //      that contain line breaks.
+            //      Tracked by: https://github.com/aspnet/EntityFrameworkCore/issues/15256
+            //
+            //      Convert line break characters to their CHAR() representation as a workaround.
+
+            if (_options.ReplaceLineBreaksWithCharFunction
+                && (value.Contains("\r") || value.Contains("\n")))
+            {
+                escapedLiteral = "CONCAT(" + escapedLiteral
+                    .Replace("\r\n", "', CHAR(13, 10), '")
+                    .Replace("\r", "', CHAR(13), '")
+                    .Replace("\n", "', CHAR(10), '") + ")";
+            }
+
+            return escapedLiteral;
+        }
 
         protected override string EscapeSqlLiteral(string literal)
+            => EscapeBackslashes(base.EscapeSqlLiteral(literal));
+
+        private string EscapeBackslashes(string literal)
         {
-            return _noBackslashEscapes
-                ? base.EscapeSqlLiteral(literal)
-                : base.EscapeSqlLiteral(literal).Replace("\\", "\\\\");
+            return _options.NoBackslashEscapes
+                ? literal
+                : literal.Replace(@"\", @"\\");
         }
     }
 }

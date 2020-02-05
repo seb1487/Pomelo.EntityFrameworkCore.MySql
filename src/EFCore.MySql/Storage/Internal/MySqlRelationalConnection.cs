@@ -8,102 +8,155 @@ using System.Threading.Tasks;
 using System.Transactions;
 using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Internal;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using MySql.Data.MySqlClient;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Internal;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Storage.Internal
 {
     public class MySqlRelationalConnection : RelationalConnection, IMySqlRelationalConnection
     {
-        public MySqlRelationalConnection([NotNull] RelationalConnectionDependencies dependencies)
+        private const string NoBackslashEscapes = "NO_BACKSLASH_ESCAPES";
+
+        private readonly MySqlOptionsExtension _mySqlOptionsExtension;
+
+        // ReSharper disable once VirtualMemberCallInConstructor
+        public MySqlRelationalConnection(
+            [NotNull] RelationalConnectionDependencies dependencies)
             : base(dependencies)
         {
+            _mySqlOptionsExtension = Dependencies.ContextOptions.FindExtension<MySqlOptionsExtension>() ?? new MySqlOptionsExtension();
         }
 
-        protected override DbConnection CreateDbConnection() => new MySqlConnection(ConnectionString);
+        private bool IsMasterConnection { get; set; }
+
+        protected override DbConnection CreateDbConnection()
+            => new MySqlConnection(AddConnectionStringOptions(new MySqlConnectionStringBuilder(ConnectionString)).ConnectionString);
 
         public virtual IMySqlRelationalConnection CreateMasterConnection()
         {
-            var csb = new MySqlConnectionStringBuilder(ConnectionString)
+            var relationalOptions = RelationalOptionsExtension.Extract(Dependencies.ContextOptions);
+            var connection = (MySqlConnection)relationalOptions.Connection;
+            var connectionString = connection?.ConnectionString ?? relationalOptions.ConnectionString;
+
+            // Add master connection specific options.
+            var csb = new MySqlConnectionStringBuilder(connectionString)
             {
-                Database = "",
+                Database = string.Empty,
                 Pooling = false
             };
 
-            var contextOptions = new DbContextOptionsBuilder()
-                .UseMySql(csb.ConnectionString)
-                .Options;
+            csb = AddConnectionStringOptions(csb);
 
-            return new MySqlRelationalConnection(Dependencies.With(contextOptions));
+            // Apply modified connection string.
+            relationalOptions = connection is null
+                ? relationalOptions.WithConnectionString(csb.ConnectionString)
+                : relationalOptions.WithConnection(connection.CloneWith(csb.ConnectionString));
+
+            var optionsBuilder = new DbContextOptionsBuilder();
+            var optionsBuilderInfrastructure = (IDbContextOptionsBuilderInfrastructure)optionsBuilder;
+
+            optionsBuilderInfrastructure.AddOrUpdateExtension(relationalOptions);
+
+            return new MySqlRelationalConnection(Dependencies.With(optionsBuilder.Options))
+            {
+                IsMasterConnection = true
+            };
         }
 
-        protected override bool SupportsAmbientTransactions => false;
+        private MySqlConnectionStringBuilder AddConnectionStringOptions(MySqlConnectionStringBuilder builder)
+        {
+            if (CommandTimeout != null)
+            {
+                builder.DefaultCommandTimeout = (uint)CommandTimeout.Value;
+            }
+
+            if (_mySqlOptionsExtension.NoBackslashEscapes)
+            {
+                builder.NoBackslashEscapes = true;
+            }
+
+            var boolHandling = _mySqlOptionsExtension.DefaultDataTypeMappings?.ClrBoolean;
+            switch (boolHandling)
+            {
+                case null:
+                    // Just keep using whatever is already defined in the connection string.
+                    break;
+
+                case MySqlBooleanType.Default:
+                case MySqlBooleanType.TinyInt1:
+                    builder.TreatTinyAsBoolean = true;
+                    break;
+
+                case MySqlBooleanType.None:
+                case MySqlBooleanType.Bit1:
+                    builder.TreatTinyAsBoolean = false;
+                    break;
+
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
+
+            return builder;
+        }
+
+        protected override bool SupportsAmbientTransactions => true;
         public override bool IsMultipleActiveResultSetsEnabled => false;
 
-        public override async Task<IDbContextTransaction> BeginTransactionAsync(
-            System.Data.IsolationLevel isolationLevel,
-            CancellationToken cancellationToken = default(CancellationToken))
+        public override void EnlistTransaction(Transaction transaction)
         {
-            await OpenAsync(cancellationToken).ConfigureAwait(false);
-
-            if (CurrentTransaction != null)
+            try
             {
-                throw new InvalidOperationException(RelationalStrings.TransactionAlreadyStarted);
+                base.EnlistTransaction(transaction);
             }
-
-            if (Transaction.Current != null)
+            catch (MySqlException e)
             {
-                throw new InvalidOperationException(RelationalStrings.ConflictingAmbientTransaction);
-            }
+                if (e.Message == "Already enlisted in a Transaction.")
+                {
+                    // Return expected exception type.
+                    throw new InvalidOperationException(e.Message, e);
+                }
 
-            if (EnlistedTransaction != null)
-            {
-                throw new InvalidOperationException(RelationalStrings.ConflictingEnlistedTransaction);
+                throw;
             }
-
-            return await BeginTransactionWithNoPreconditionsAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
         }
 
-        private async Task<IDbContextTransaction> BeginTransactionWithNoPreconditionsAsync(
-            System.Data.IsolationLevel isolationLevel, CancellationToken cancellationToken = default(CancellationToken))
+        public override bool Open(bool errorsExpected = false)
         {
-            var dbTransaction = await ((MySqlConnection)DbConnection).BeginTransactionAsync(isolationLevel, cancellationToken)
-                .ConfigureAwait(false);
+            var result = base.Open(errorsExpected);
 
-            CurrentTransaction = Dependencies.RelationalTransactionFactory.Create(
-                this,
-                dbTransaction,
-                Dependencies.TransactionLogger,
-                transactionOwned: true);
-
-            Dependencies.TransactionLogger.TransactionStarted(
-                this,
-                dbTransaction,
-                CurrentTransaction.TransactionId,
-                DateTimeOffset.UtcNow);
-
-            return CurrentTransaction;
-        }
-
-        public virtual async Task CommitTransactionAsync(CancellationToken cancellationToken = default(CancellationToken))
-        {
-            if (CurrentTransaction == null)
+            if (result)
             {
-                throw new InvalidOperationException(RelationalStrings.NoActiveTransaction);
+                if (_mySqlOptionsExtension.UpdateSqlModeOnOpen && _mySqlOptionsExtension.NoBackslashEscapes)
+                {
+                    AppendToSqlMode(NoBackslashEscapes);
+                }
             }
 
-            await ((MySqlRelationalTransaction)CurrentTransaction).CommitAsync(cancellationToken).ConfigureAwait(false);
+            return result;
         }
 
-        public virtual async Task RollbackTransactionAsync(CancellationToken cancellationToken = default(CancellationToken))
+        public override async Task<bool> OpenAsync(CancellationToken cancellationToken, bool errorsExpected = false)
         {
-            if (CurrentTransaction == null)
+            var result = await base.OpenAsync(cancellationToken, errorsExpected);
+
+            if (result)
             {
-                throw new InvalidOperationException(RelationalStrings.NoActiveTransaction);
+                if (_mySqlOptionsExtension.UpdateSqlModeOnOpen && _mySqlOptionsExtension.NoBackslashEscapes)
+                {
+                    await AppendToSqlModeAsync(NoBackslashEscapes);
+                }
             }
 
-            await ((MySqlRelationalTransaction)CurrentTransaction).RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return result;
         }
+
+        public virtual void AppendToSqlMode(string mode)
+            => Dependencies.CurrentContext.Context?.Database.ExecuteSqlRaw(@"SET SESSION sql_mode = CONCAT(@@sql_mode, ',', @p0)", new MySqlParameter("@p0", mode));
+
+        public virtual Task AppendToSqlModeAsync(string mode)
+            => Dependencies.CurrentContext.Context?.Database.ExecuteSqlRawAsync(@"SET SESSION sql_mode = CONCAT(@@sql_mode, ',', @p0)", new MySqlParameter("@p0", mode));
     }
 }

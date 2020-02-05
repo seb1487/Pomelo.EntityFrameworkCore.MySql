@@ -4,7 +4,10 @@
 using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Scaffolding;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure.Internal;
+using Pomelo.EntityFrameworkCore.MySql.Storage.Internal;
 
 namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
 {
@@ -14,13 +17,14 @@ namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
     /// </summary>
     public class MySqlCodeGenerator : ProviderCodeGenerator
     {
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="MySqlCodeGenerator" /> class.
-        /// </summary>
-        /// <param name="dependencies"> The dependencies. </param>
-        public MySqlCodeGenerator([NotNull] ProviderCodeGeneratorDependencies dependencies)
+        private readonly IMySqlOptions _options;
+
+        public MySqlCodeGenerator(
+            [NotNull] ProviderCodeGeneratorDependencies dependencies,
+            IMySqlOptions options)
             : base(dependencies)
         {
+            _options = options;
         }
 
         /// <summary>
@@ -30,11 +34,28 @@ namespace Pomelo.EntityFrameworkCore.MySql.Scaffolding.Internal
         public override MethodCallCodeFragment GenerateUseProvider(
             string connectionString,
             MethodCallCodeFragment providerOptions)
-            => new MethodCallCodeFragment(
+        {
+            // Strip scaffolding specific connection string options first.
+            connectionString = new MySqlScaffoldingConnectionSettings(connectionString).GetProviderCompatibleConnectionString();
+
+            return new MethodCallCodeFragment(
                 nameof(MySqlDbContextOptionsExtensions.UseMySql),
                 providerOptions == null
-                ? new object[] { connectionString }
-                : new object[] { connectionString, new NestedClosureCodeFragment("x", providerOptions) });
+                    ? new object[] {connectionString}
+                    : new object[] {connectionString, new NestedClosureCodeFragment("x", providerOptions)});
+        }
+
+        public override MethodCallCodeFragment GenerateProviderOptions()
+        {
+            var serverVersionCall = new MethodCallCodeFragment(
+                nameof(MySqlDbContextOptionsBuilder.ServerVersion),
+                _options.ServerVersion.ToString());
+
+            var providerOptions = base.GenerateProviderOptions();
+
+            return providerOptions == null
+                ? serverVersionCall
+                : serverVersionCall.Chain(providerOptions);
+        }
     }
 }
-
